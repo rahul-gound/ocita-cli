@@ -946,12 +946,152 @@ class ProviderHandler:
         }
 
     @classmethod
+    def _call_gemini_web(cls, model, system_prompt, messages, tools, cookies):
+        """
+        Invokes Google Gemini using Web Session cookies (__Secure-1PSID, __Secure-1PSIDTS)
+        or Google Account Web session.
+        """
+        import urllib.parse
+        import urllib.request
+        import re
+
+        cookie_str = str(cookies).strip()
+        if not ("__Secure-1PSID=" in cookie_str or "=" in cookie_str):
+            cookie_str = f"__Secure-1PSID={cookie_str}"
+
+        # Build composite conversation prompt
+        prompt_parts = []
+        if system_prompt:
+            prompt_parts.append(f"SYSTEM INSTRUCTIONS:\n{system_prompt}")
+
+        if tools:
+            tool_descs = []
+            for t in tools:
+                tool_descs.append(f"- {t['name']}: {t.get('description', '')}\n  Parameters: {json.dumps(t.get('parameters', {}))}")
+            tool_instr = (
+                "AVAILABLE TOOLS:\n"
+                + "\n".join(tool_descs)
+                + "\n\nIf you want to invoke a tool, output a JSON block like:\n```json\n{\n  \"tool\": \"<tool_name>\",\n  \"arguments\": {\"param\": \"value\"}\n}\n```"
+            )
+            prompt_parts.append(tool_instr)
+
+        for m in messages:
+            r = m.get("role", "user").upper()
+            content = m.get("content", "")
+            if m.get("tool_calls"):
+                content += "\n[Tool Calls]: " + json.dumps(m["tool_calls"])
+            prompt_parts.append(f"[{r}]: {content}")
+
+        full_prompt = "\n\n".join(prompt_parts)
+
+        # Gemini Web stream endpoint
+        url = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate"
+        
+        req_data = [None, json.dumps([[full_prompt, 0, None, None, None, None, 0], ["en"], ["", "", ""]])]
+        body = urllib.parse.urlencode({"f.req": json.dumps(req_data), "at": ""}).encode("utf-8")
+
+        headers = {
+            "Cookie": cookie_str,
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "X-Same-Domain": "1",
+            "Origin": "https://gemini.google.com",
+            "Referer": "https://gemini.google.com/"
+        }
+
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                resp_text = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403, 302):
+                raise ValueError(
+                    f"Gemini Web cookie authentication failed (HTTP {e.code}).\n"
+                    f"Your __Secure-1PSID cookie may be expired. Please get a fresh cookie from gemini.google.com\n"
+                    f"or run '/login gemini' to enter a Google AI Studio API key."
+                )
+            raise ValueError(f"Gemini Web request failed (HTTP {e.code}): {e.reason}")
+        except Exception as e:
+            raise ValueError(f"Failed to connect to Gemini Web: {e}")
+
+        text_content = ""
+        try:
+            for line in resp_text.splitlines():
+                line = line.strip()
+                if not line or line.startswith(")]}'"):
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    def extract_strings(obj):
+                        found = []
+                        if isinstance(obj, str):
+                            if len(obj) > 10 and not obj.startswith("c_") and not obj.startswith("rc_"):
+                                found.append(obj)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                found.extend(extract_strings(item))
+                        return found
+                    
+                    strings = extract_strings(parsed)
+                    for s in strings:
+                        if len(s) > len(text_content) and s != full_prompt:
+                            text_content = s
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        if not text_content:
+            text_content = resp_text[:1000]
+
+        tool_calls = []
+        if "```json" in text_content and '"tool"' in text_content:
+            try:
+                blocks = re.findall(r"```json\s*(\{.*?\})\s*```", text_content, re.DOTALL)
+                for b in blocks:
+                    data = json.loads(b)
+                    if "tool" in data:
+                        tool_calls.append({
+                            "id": f"call_web_{int(time.time()*1000)}",
+                            "name": data["tool"],
+                            "args": data.get("arguments", data.get("args", {}))
+                        })
+            except Exception:
+                pass
+
+        return {
+            "content": text_content,
+            "tool_calls": tool_calls,
+            "prompt_tokens": len(full_prompt) // 4,
+            "completion_tokens": len(text_content) // 4
+        }
+
+    @classmethod
     def _call_openai_compatible(cls, provider, model, system_prompt, messages, tools):
-        api_key = cls.auth_manager.get_key(provider)
+        actual_model = model
+        if provider in ("gemini", "google"):
+            if not actual_model or actual_model in ("default", "gemini", "argon", "gemini-argon"):
+                actual_model = "gemini-4-argon"
+            g_type, g_cred = cls.auth_manager.get_gemini_auth_type()
+            if g_type == "gemini_web_cookie":
+                return cls._call_gemini_web(
+                    model=actual_model,
+                    system_prompt=system_prompt,
+                    messages=messages,
+                    tools=tools,
+                    cookies=g_cred
+                )
+            elif g_type in ("google_oauth_token", "gemini_api_key"):
+                api_key = g_cred
+            else:
+                api_key = cls.auth_manager.get_key(provider)
+        else:
+            api_key = cls.auth_manager.get_key(provider)
+
         if provider != "ollama" and not api_key:
             raise ValueError(
-                f"No API key configured for provider '{provider}'.\n"
-                f"Please run '/login {provider}' or export {provider.upper()}_API_KEY=your_key."
+                f"No API key or web cookie configured for provider '{provider}'.\n"
+                f"Please run '/login {provider}' or export {provider.upper()}_API_KEY or GEMINI_COOKIE."
             )
 
         openai_tools = []
@@ -1262,9 +1402,10 @@ def handle_slash_command(cmd, session):
   {Style.CYAN}/chatgpt [model]{Style.RESET}   Switch provider to ChatGPT (e.g. chatgpt-4o-latest, gpt-4o, o3-mini)
   {Style.CYAN}/claude [model]{Style.RESET}    Switch provider to Anthropic Claude (e.g. claude-3-7-sonnet)
   {Style.CYAN}/models{Style.RESET}            List recommended frontier models for Gemini, ChatGPT & Claude
+  {Style.CYAN}/cookie [val]{Style.RESET}      Inspect or set Gemini web cookie (__Secure-1PSID)
   {Style.CYAN}/slow [on|off]{Style.RESET}     Toggle deliberate step pacing & mandatory comment mode
   {Style.CYAN}/time{Style.RESET}, {Style.CYAN}/hackatime{Style.RESET}   View Hackatime tracking stats & connection
-  {Style.CYAN}/login [target]{Style.RESET}    Authenticate with Claude.ai, Gemini, ChatGPT or API key
+  {Style.CYAN}/login [target]{Style.RESET}    Authenticate with Gemini (API key, cookie, credits), Claude.ai, ChatGPT
   {Style.CYAN}/logout [provider]{Style.RESET} Clear stored credentials
   {Style.CYAN}/auth{Style.RESET}              Display active authentication status
   {Style.CYAN}/review{Style.RESET}            Run enterprise architectural & security code review on diff
@@ -1330,6 +1471,23 @@ def handle_slash_command(cmd, session):
         print(f"{Style.GREEN}✔ Switched provider to ChatGPT ({model_name}){Style.RESET}")
         return True
 
+    elif keyword in ("/cookie", "/cookies"):
+        if arg:
+            auth_mgr.set_key("gemini-cookie", arg)
+            session.provider = "gemini"
+            session.model = "gemini-4-argon"
+            print(f"{Style.GREEN}✔ Successfully saved Gemini web cookie! Provider switched to gemini (gemini-4-argon).{Style.RESET}")
+        else:
+            atype, val = auth_mgr.get_gemini_auth_type()
+            if atype == "gemini_web_cookie":
+                preview = val[:8] + "..." + val[-4:] if len(val) > 12 else "***"
+                print(f"{Style.GREEN}Active Gemini Web Cookie ({atype}):{Style.RESET} {preview}")
+            elif atype:
+                print(f"{Style.CYAN}Gemini configured via {atype}.{Style.RESET}")
+            else:
+                print(f"{Style.YELLOW}No active Gemini cookie or key. Run '/cookie <__Secure-1PSID>' or '/login gemini'.{Style.RESET}")
+        return True
+
     elif keyword == "/slow":
         if arg.lower() in ("off", "false", "0", "disable", "fast"):
             session.slow_mode = False
@@ -1356,24 +1514,28 @@ def handle_slash_command(cmd, session):
         target = (arg or "").lower()
         if not target:
             print(f"\n{Style.BOLD}Select Provider to Authenticate:{Style.RESET}")
-            print(f"  1. {Style.BOLD}gemini{Style.RESET}    - Google Gemini (Gemini 4 Argon, 2.0 Flash) [AI Studio key]")
+            print(f"  1. {Style.BOLD}gemini{Style.RESET}    - Google Gemini (API key, Web Cookie __Secure-1PSID, Account Credits)")
             print(f"  2. {Style.BOLD}chatgpt{Style.RESET}   - OpenAI / ChatGPT (chatgpt-4o-latest, gpt-4o, o3-mini)")
             print(f"  3. {Style.BOLD}claude{Style.RESET}    - Claude.ai sessionKey or Anthropic API Key")
             print(f"  4. {Style.BOLD}other{Style.RESET}     - DeepSeek, Mistral, Perplexity, OpenRouter, Groq")
             target = input(f"{Style.CYAN}Enter provider [gemini/chatgpt/claude/other]: {Style.RESET}").strip().lower() or "gemini"
 
-        if target in ("gemini", "google"):
-            print(f"\n{Style.BOLD}Google Gemini Setup (Gemini 4 Argon, 2.0 Flash):{Style.RESET}")
-            print("  Get your free API key at: https://aistudio.google.com/apikey")
-            val = input(f"\n{Style.CYAN}Paste your Google Gemini API Key: {Style.RESET}").strip()
+        if target in ("gemini", "google", "gemini-cookie", "gemini_cookie", "cookie"):
+            print(f"\n{Style.BOLD}Google Gemini Authentication & Credits Setup:{Style.RESET}")
+            print(f"  1. {Style.BOLD}Google AI Studio API Key{Style.RESET}   (AIzaSy...) from https://aistudio.google.com/apikey")
+            print(f"  2. {Style.BOLD}Gemini Web Session Cookie{Style.RESET}  (Use Gemini Advanced / Web account without a paid API key)")
+            print(f"     [Tip: Open gemini.google.com -> F12 DevTools -> Application/Storage -> Cookies -> copy '__Secure-1PSID']")
+            print(f"  3. {Style.BOLD}Google Account Credits{Style.RESET}     (OAuth Bearer token ya29... to use Cloud/Account credits)")
+            val = input(f"\n{Style.CYAN}Paste your Gemini API Key, __Secure-1PSID cookie, or OAuth token: {Style.RESET}").strip()
             if val:
                 valid, msg = auth_mgr.validate_key("gemini", val)
                 if not valid:
                     print(f"{Style.YELLOW}⚠ Warning: {msg}{Style.RESET}")
                 auth_mgr.set_key("gemini", val)
+                atype, _ = auth_mgr.get_gemini_auth_type()
                 session.provider = "gemini"
                 session.model = "gemini-4-argon"
-                print(f"{Style.GREEN}✔ Successfully configured Google Gemini! Default model set to gemini-4-argon.{Style.RESET}")
+                print(f"{Style.GREEN}✔ Successfully configured Google Gemini ({atype})! Default model set to gemini-4-argon.{Style.RESET}")
 
         elif target in ("chatgpt", "openai"):
             print(f"\n{Style.BOLD}OpenAI / ChatGPT Setup (chatgpt-4o-latest, gpt-4o, o3-mini):{Style.RESET}")

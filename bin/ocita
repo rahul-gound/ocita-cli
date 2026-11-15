@@ -58,7 +58,7 @@ ${BOLD}OPTIONS:${RESET}
   -h, --help                  Show this help message
 
 ${BOLD}AUTHENTICATION & LOGINS:${RESET}
-  gemini       GEMINI_API_KEY       (Google Gemini models: gemini-4-argon, gemini-2.0-flash, gemini-1.5-pro)
+  gemini       GEMINI_API_KEY, GEMINI_COOKIE (API Key, __Secure-1PSID cookie, or credits)
   chatgpt      OPENAI_API_KEY       (OpenAI ChatGPT models: chatgpt-4o-latest, gpt-4o, o3-mini)
   claude.ai    /login claude        (Login via Claude.ai sessionKey cookie or Anthropic API Key)
   anthropic    ANTHROPIC_API_KEY    (Direct Anthropic API key)
@@ -74,9 +74,10 @@ ${BOLD}INTERACTIVE REPL COMMANDS:${RESET}
   /chatgpt     Switch provider to ChatGPT (default: chatgpt-4o-latest)
   /claude      Switch provider to Claude (default: claude-3-7-sonnet)
   /models      List recommended frontier models
+  /cookie      Inspect or set Gemini web cookie (__Secure-1PSID)
   /slow        Toggle deliberate pacing and detailed comment mode (on/off)
   /time        View today's Hackatime / WakaTime tracking stats & connection
-  /login       Authenticate with Claude.ai, Gemini, ChatGPT or API keys
+  /login       Authenticate with Gemini (key/cookie/credits), Claude.ai, ChatGPT
   /auth        Display current credentials and connected providers
   /logout      Remove stored credentials
   /review      Run enterprise architectural & security code review on git diff

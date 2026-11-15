@@ -79,7 +79,7 @@ function Show-OcitaHelp {
     Write-Host "  -h, -Help               Show this help message`n"
 
     Write-Host "AUTHENTICATION & LOGINS:" -ForegroundColor Yellow
-    Write-Host "  gemini       `$env:GEMINI_API_KEY    (Google Gemini: gemini-4-argon, gemini-2.0-flash, gemini-1.5-pro)"
+    Write-Host "  gemini       `$env:GEMINI_API_KEY, `$env:GEMINI_COOKIE (Google Gemini: API Key, __Secure-1PSID cookie, or credits)"
     Write-Host "  chatgpt      `$env:OPENAI_API_KEY    (OpenAI ChatGPT: chatgpt-4o-latest, gpt-4o, o3-mini)"
     Write-Host "  claude.ai    /login claude        (Login via Claude.ai sessionKey cookie or Anthropic API Key)"
     Write-Host "  anthropic    `$env:ANTHROPIC_API_KEY (Direct Anthropic API key)"
@@ -95,9 +95,10 @@ function Show-OcitaHelp {
     Write-Host "  /chatgpt [model]   Switch provider to ChatGPT (default: chatgpt-4o-latest)"
     Write-Host "  /claude [model]    Switch provider to Claude (default: claude-3-7-sonnet)"
     Write-Host "  /models            List recommended frontier models"
+    Write-Host "  /cookie [val]      Inspect or set Gemini web cookie (__Secure-1PSID)"
     Write-Host "  /slow [on|off]     Toggle deliberate step pacing & detailed comments"
     Write-Host "  /time, /hackatime  View today's Hackatime / WakaTime stats"
-    Write-Host "  /login             Authenticate with Claude.ai, Gemini, ChatGPT or API keys"
+    Write-Host "  /login             Authenticate with Gemini (key/cookie/credits), Claude.ai, ChatGPT"
     Write-Host "  /auth              Display connected providers"
     Write-Host "  /review            Architectural & security code review on diff"
     Write-Host "  /commit            Autonomous conventional git commit"

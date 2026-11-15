@@ -135,6 +135,30 @@ class TestOcitaCore(unittest.TestCase):
         auth.remove_key("gemini")
         auth.remove_key("chatgpt")
 
+    def test_gemini_web_cookies_and_credits(self):
+        auth = AuthManager()
+        # 1. Test cookie detection
+        cookie_val = "__Secure-1PSID=test_cookie_12345; __Secure-1PSIDTS=sidts_67890"
+        auth.set_key("gemini", cookie_val)
+        atype, cred = auth.get_gemini_auth_type()
+        self.assertEqual(atype, "gemini_web_cookie")
+        self.assertEqual(cred, cookie_val)
+
+        valid, msg = auth.validate_key("gemini", cookie_val)
+        self.assertTrue(valid)
+        self.assertIn("cookies", msg)
+
+        # 2. Test Google OAuth token (Account credits)
+        oauth_val = "ya29.a0AfH6SMA_test_oauth_access_token_with_credits"
+        auth.set_key("gemini", oauth_val)
+        atype, cred = auth.get_gemini_auth_type()
+        self.assertEqual(atype, "google_oauth_token")
+        self.assertEqual(cred, oauth_val)
+
+        # Cleanup
+        auth.remove_key("gemini")
+        self.assertIsNone(auth.get_gemini_auth_type()[0])
+
     def test_slash_commands_and_argon(self):
         from ocita_core import AgentSession, handle_slash_command
         session = AgentSession(provider="anthropic", model="claude-3-7-sonnet")
@@ -158,6 +182,12 @@ class TestOcitaCore(unittest.TestCase):
         # Test /models
         res = handle_slash_command("/models", session)
         self.assertTrue(res)
+
+        # Test /cookie
+        res_cookie = handle_slash_command("/cookie __Secure-1PSID=mock_cookie_val_abc", session)
+        self.assertTrue(res_cookie)
+        self.assertEqual(session.provider, "gemini")
+        self.assertEqual(session.model, "gemini-4-argon")
 
     def test_tools_schema_count(self):
         tool_names = [t["name"] for t in TOOLS_SCHEMA]
