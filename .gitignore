@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ocita local sessions and state
+.ocita/sessions/
+*.session.json
+
+# Environment variables and API keys
+.env
+.env.*
+auth.json
+*.key
+
+# Wakatime / Hackatime local files
+.wakatime/
+.wakatime.cfg
+.wakatime.log
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE / Editor configuration
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing / Coverage
+.coverage
+htmlcov/
+.pytest_cache/

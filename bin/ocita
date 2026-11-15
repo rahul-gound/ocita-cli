@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# ocita - Smart Claude Code CLI Alternative in Bash / for Bash
+# Version: 1.0.0
+# License: MIT
+# ==============================================================================
+
+set -o pipefail
+
+# ANSI Styling
+if [ -t 1 ]; then
+  BOLD="\033[1m"; DIM="\033[2m"; RED="\033[31m"; GREEN="\033[32m"; YELLOW="\033[33m"; BLUE="\033[34m"; CYAN="\033[36m"; RESET="\033[0m"
+else
+  BOLD=""; DIM=""; RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; RESET=""
+fi
+
+# Resolve script directory (symlink safe)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+OCITA_DIR="$( cd -P "$( dirname "$SOURCE" )/.." >/dev/null 2>&1 && pwd )"
+OCITA_BIN="$OCITA_DIR/bin/ocita"
+OCITA_LIB="$OCITA_DIR/lib"
+OCITA_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ocita"
+OCITA_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ocita"
+OCITA_SESSIONS_DIR="$OCITA_DATA_DIR/sessions"
+
+# ==============================================================================
+# Usage & Help Functions
+# ==============================================================================
+show_help() {
+  cat << EOF
+${BOLD}${CYAN}ocita${RESET} - Enterprise Claude Code CLI Alternate in Bash (v1.2.0)
+${DIM}Built-in Hackatime / WakaTime, Claude.ai Web & API Auth, Enterprise Prompting${RESET}
+
+${BOLD}USAGE:${RESET}
+  ocita [OPTIONS] [PROMPT]
+  ocita [OPTIONS] < input.txt
+  cat error.log | ocita "diagnose and fix this"
+
+${BOLD}OPTIONS:${RESET}
+  -p, --provider <name>       AI provider (gemini, chatgpt, anthropic, openrouter, deepseek, ollama, groq)
+  -m, --model <name>          Model name (e.g., gemini-2.0-flash, chatgpt-4o-latest, gpt-4o, claude-3-7-sonnet)
+  --slow                      Work slowly and deliberately with comprehensive explanatory code comments (default)
+  --fast                      Disable deliberate pacing mode
+  -y, --yes, --dangerously-skip-permissions
+                              Automatically approve tool execution (non-interactive mode)
+  -c, --continue              Continue the most recent session in this directory
+  -s, --session <id>          Resume specific session ID
+  --max-steps <num>           Maximum agent reasoning steps per turn (default: 25)
+  --system <prompt>           Append or override custom system instructions
+  --init                      Create an OCITA.md template in current directory
+  -v, --verbose               Show debug logs & API payloads
+  --version                   Show version information
+  -h, --help                  Show this help message
+
+${BOLD}AUTHENTICATION & LOGINS:${RESET}
+  gemini       GEMINI_API_KEY       (Google Gemini models: gemini-4-argon, gemini-2.0-flash, gemini-1.5-pro)
+  chatgpt      OPENAI_API_KEY       (OpenAI ChatGPT models: chatgpt-4o-latest, gpt-4o, o3-mini)
+  claude.ai    /login claude        (Login via Claude.ai sessionKey cookie or Anthropic API Key)
+  anthropic    ANTHROPIC_API_KEY    (Direct Anthropic API key)
+  openrouter   OPENROUTER_API_KEY   (Default provider; Claude 3.7, DeepSeek R1, GPT-4o, etc.)
+  deepseek     DEEPSEEK_API_KEY     (Direct DeepSeek API key)
+  ollama       (None required)      (Local models via http://localhost:11434)
+  groq         GROQ_API_KEY         (Groq high-speed inference)
+
+${BOLD}INTERACTIVE REPL COMMANDS:${RESET}
+  /help        Show available REPL commands
+  /argon       Switch immediately to Google Gemini 4 Argon (Frontier Reasoning & Coding)
+  /gemini      Switch provider to Google Gemini (default: gemini-4-argon)
+  /chatgpt     Switch provider to ChatGPT (default: chatgpt-4o-latest)
+  /claude      Switch provider to Claude (default: claude-3-7-sonnet)
+  /models      List recommended frontier models
+  /slow        Toggle deliberate pacing and detailed comment mode (on/off)
+  /time        View today's Hackatime / WakaTime tracking stats & connection
+  /login       Authenticate with Claude.ai, Gemini, ChatGPT or API keys
+  /auth        Display current credentials and connected providers
+  /logout      Remove stored credentials
+  /review      Run enterprise architectural & security code review on git diff
+  /commit      Autonomous conventional git commit generator
+  /test        Auto-detect and run project test suite
+  /lint        Auto-detect and run project linter
+  /doctor      Diagnose system, tools, Hackatime, and API health
+  /model       Switch or view active model
+  /provider    Switch or view active provider
+  /diff        View current git diff
+  /undo        Revert last changes made by ocita
+  /branch      View or create git branch
+  /export      Export conversation session to Markdown or HTML
+  /clear       Clear conversation history
+  /compact     Compact context window to preserve tokens
+  /cost        Show token consumption and estimated cost
+  /init        Generate OCITA.md in current project
+  /exit, /quit Exit interactive session
+
+${BOLD}EXAMPLES:${RESET}
+  ocita                                         # Launch interactive REPL
+  ocita "Write unit tests for auth.py"          # Run one-off task
+  ocita -p anthropic -m claude-3-7-sonnet       # Use Claude 3.7 directly
+  ocita -p ollama -m qwen2.5-coder:7b           # Free 100% offline local coding agent
+  git diff | ocita "Review these changes"       # Pipe git diff for code review
+  ocita -y "Refactor imports in src/"           # Autonomous mode (no tool prompts)
+
+EOF
+}
+
+show_version() {
+  echo -e "${BOLD}${CYAN}ocita${RESET} version 1.0.0 (Claude Code CLI Bash Alternate)"
+  echo "Project Root: $OCITA_DIR"
+}
+
+# Quick check for help/version flags before touching python or stdin
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --version)
+      show_version
+      exit 0
+      ;;
+  esac
+done
+
+# Initialize directories
+mkdir -p "$OCITA_CONFIG_DIR" "$OCITA_SESSIONS_DIR"
+
+# Source Bash helper modules
+if [ -f "$OCITA_LIB/prompt.sh" ]; then
+  # shellcheck source=/dev/null
+  source "$OCITA_LIB/prompt.sh"
+fi
+
+# Detect Python interpreter (standard library only)
+PYTHON_CMD=""
+for cmd in python python3; do
+  if command -v "$cmd" >/dev/null 2>&1; then
+    PYTHON_CMD="$cmd"
+    break
+  fi
+done
+
+if [ -z "$PYTHON_CMD" ]; then
+  echo -e "${RED}[Error] Python 3 is required by ocita for API & JSON processing.${RESET}"
+  echo "Please install Python 3 or ensure it is in your PATH."
+  exit 1
+fi
+
+# Configuration Defaults
+DEFAULT_PROVIDER="openrouter"
+DEFAULT_MODEL="anthropic/claude-3.7-sonnet"
+DANGEROUSLY_SKIP_PERMISSIONS=false
+CONTINUE_SESSION=false
+SESSION_ID=""
+SYSTEM_PROMPT_OVERRIDE=""
+MAX_STEPS=25
+VERBOSE=false
+PIPE_INPUT=""
+
+# ==============================================================================
+# CLI Argument Parsing
+# ==============================================================================
+PROMPT_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--provider)
+      DEFAULT_PROVIDER="$2"
+      shift 2
+      ;;
+    -m|--model)
+      DEFAULT_MODEL="$2"
+      shift 2
+      ;;
+    -y|--yes|--dangerously-skip-permissions)
+      DANGEROUSLY_SKIP_PERMISSIONS=true
+      shift
+      ;;
+    -c|--continue)
+      CONTINUE_SESSION=true
+      shift
+      ;;
+    -s|--session)
+      SESSION_ID="$2"
+      shift 2
+      ;;
+    --max-steps)
+      MAX_STEPS="$2"
+      shift 2
+      ;;
+    --system)
+      SYSTEM_PROMPT_OVERRIDE="$2"
+      shift 2
+      ;;
+    --slow)
+      export OCITA_SLOW="true"
+      export OCITA_FAST="false"
+      shift
+      ;;
+    --fast)
+      export OCITA_FAST="true"
+      export OCITA_SLOW="false"
+      shift
+      ;;
+    --init)
+      "$OCITA_LIB/context.sh" init
+      exit $?
+      ;;
+    -v|--verbose)
+      VERBOSE=true
+      shift
+      ;;
+    *)
+      PROMPT_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+PROMPT_INPUT="${PROMPT_ARGS[*]}"
+
+# Read standard input if piped (only when stdin is a pipe)
+if [ -p /dev/stdin ]; then
+  PIPE_INPUT="$(cat)"
+fi
+
+# If piped input exists, combine with prompt
+if [ -n "$PIPE_INPUT" ]; then
+  if [ -n "$PROMPT_INPUT" ]; then
+    PROMPT_INPUT="$PROMPT_INPUT
+
+\`\`\`input
+$PIPE_INPUT
+\`\`\`"
+  else
+    PROMPT_INPUT="Here is the input from standard input:
+
+\`\`\`input
+$PIPE_INPUT
+\`\`\`
+Please analyze it and assist."
+  fi
+fi
+
+# Export configuration for child processes and python core
+export OCITA_DIR
+export OCITA_LIB
+export OCITA_CONFIG_DIR
+export OCITA_SESSIONS_DIR
+export OCITA_PROVIDER="$DEFAULT_PROVIDER"
+export OCITA_MODEL="$DEFAULT_MODEL"
+export OCITA_AUTO_APPROVE="$DANGEROUSLY_SKIP_PERMISSIONS"
+export OCITA_MAX_STEPS="$MAX_STEPS"
+export OCITA_VERBOSE="$VERBOSE"
+export OCITA_SYSTEM_OVERRIDE="$SYSTEM_PROMPT_OVERRIDE"
+export OCITA_CONTINUE="$CONTINUE_SESSION"
+export OCITA_SESSION_ID="$SESSION_ID"
+
+# ==============================================================================
+# Launch Core Engine
+# ==============================================================================
+if [ -n "$PROMPT_INPUT" ]; then
+  # Non-interactive mode (single task)
+  "$PYTHON_CMD" "$OCITA_LIB/ocita_core.py" --prompt "$PROMPT_INPUT"
+  EXIT_CODE=$?
+  exit $EXIT_CODE
+else
+  # Interactive REPL mode
+  "$PYTHON_CMD" "$OCITA_LIB/ocita_core.py" --interactive
+  EXIT_CODE=$?
+  exit $EXIT_CODE
+fi
